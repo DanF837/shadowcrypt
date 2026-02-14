@@ -74,6 +74,8 @@ Key Input::getKey() {
         case 'l': case 'L': return Key::Load;
         case 'x': case 'X': return Key::Look;
         case 'z': case 'Z': return Key::AutoExplore;
+        case 'm': case 'M': return Key::MessageLog;
+        case 't': case 'T': return Key::Wait;
         case 27:            return Key::Escape;
         case '1':           return Key::Num1;
         case '2':           return Key::Num2;

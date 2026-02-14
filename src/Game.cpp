@@ -10,17 +10,23 @@
 #include <unistd.h>
 #endif
 
-static std::string resolveCombat(Entity& attacker, Entity& defender, int atkBonus = 0, int defBonus = 0) {
+static std::string resolveCombat(Entity& attacker, Entity& defender, int atkBonus = 0, int defBonus = 0, int* outDmg = nullptr) {
+    bool crit = (std::rand() % 10 == 0); // 10% critical hit chance
     int atk = attacker.attack + atkBonus;
     int def = defender.defense + defBonus;
     int variance = (std::rand() % 5) - 2; // -2 to +2
     int damage = std::max(1, atk - def + variance);
+    if (crit) damage *= 2;
 
     defender.hp -= damage;
     if (defender.hp < 0) defender.hp = 0;
+    if (outDmg) *outDmg = damage;
 
-    std::string msg = attacker.name + " hits " + defender.name +
-                      " for " + std::to_string(damage) + " damage.";
+    std::string msg = attacker.name;
+    if (crit) msg += " CRITICALLY";
+    msg += " hits " + defender.name +
+           " for " + std::to_string(damage) + " damage.";
+    if (crit) msg += " Critical hit!";
     if (!defender.isAlive()) {
         msg += " " + defender.name + " dies!";
     }
@@ -35,13 +41,16 @@ void Game::run() {
 
     while (running) {
         switch (state) {
-            case GameState::Menu:        handleMenu(); break;
-            case GameState::ClassSelect: handleClassSelect(); break;
-            case GameState::Playing:     handlePlaying(); break;
-            case GameState::Inventory:   handleInventory(); break;
-            case GameState::Looking:     handleLooking(); break;
-            case GameState::GameOver:    handleGameOver(); break;
-            case GameState::Win:         handleWin(); break;
+            case GameState::Menu:             handleMenu(); break;
+            case GameState::DifficultySelect: handleDifficultySelect(); break;
+            case GameState::ClassSelect:      handleClassSelect(); break;
+            case GameState::Playing:          handlePlaying(); break;
+            case GameState::Inventory:        handleInventory(); break;
+            case GameState::Looking:          handleLooking(); break;
+            case GameState::LevelUp:          handleLevelUp(); break;
+            case GameState::MessageLog:       handleMessageLog(); break;
+            case GameState::GameOver:         handleGameOver(); break;
+            case GameState::Win:              handleWin(); break;
         }
     }
 
@@ -54,6 +63,11 @@ void Game::run() {
 void Game::newGame(PlayerClass cls) {
     currentFloor = 1;
     player = Player(cls);
+    player.damageDealt = 0;
+    player.damageTaken = 0;
+    player.potionsUsed = 0;
+    player.turnsPlayed = 0;
+    player.lastDamageSource = "the dungeon";
     messageLog.clear();
     scoreRecorded = false;
     addMessage("You enter the dungeon as a " + std::string(
@@ -107,9 +121,20 @@ void Game::generateFloor() {
     addMessage("Floor " + std::to_string(currentFloor) + ".");
 }
 
+void Game::applyDifficulty(Enemy& e) {
+    if (difficulty == Difficulty::Easy) {
+        e.hp = e.maxHp = std::max(1, e.maxHp * 3 / 4);
+        e.attack = std::max(1, e.attack * 3 / 4);
+    } else if (difficulty == Difficulty::Hard) {
+        e.hp = e.maxHp = e.maxHp * 3 / 2;
+        e.attack = e.attack * 5 / 4;
+    }
+}
+
 void Game::spawnEnemies() {
     auto& rooms = dunGen.getRooms();
     int count = 3 + currentFloor * 2;
+    if (difficulty == Difficulty::Hard) count += 2;
 
     for (int i = 0; i < count && rooms.size() > 1; i++) {
         // Pick a random room (not the first one where player spawns)
@@ -126,6 +151,7 @@ void Game::spawnEnemies() {
                 et = Enemy::randomForFloor(currentFloor);
             }
             enemies.push_back(Enemy::create(et, {ex, ey}));
+            applyDifficulty(enemies.back());
         }
     }
 }
@@ -140,6 +166,9 @@ void Game::spawnItems() {
         {"Health Potion",  '!', ItemType::HealthPotion, 10 + currentFloor * 2},
         {"Attack Scroll",  '?', ItemType::AttackBoost,  1},
         {"Defense Scroll", '?', ItemType::DefenseBoost, 1},
+        {"Teleport Scroll",'?', ItemType::TeleportScroll, 0},
+        {"Bomb",           'o', ItemType::Bomb, 10 + currentFloor * 2},
+        {"Shield Potion",  '!', ItemType::ShieldPotion, 3 + currentFloor},
     };
 
     // Floor-scaled weapons and armor
@@ -204,6 +233,7 @@ void Game::spawnBoss() {
     bossPos.x += 1;
     if (!map.isWalkable(bossPos.x, bossPos.y)) bossPos.x -= 2;
     enemies.push_back(Enemy::create(EnemyType::Dragon, bossPos));
+    applyDifficulty(enemies.back());
     addMessage("You sense a powerful presence on this floor...");
 }
 
@@ -215,6 +245,7 @@ void Game::spawnBoss8() {
     bossPos.x += 1;
     if (!map.isWalkable(bossPos.x, bossPos.y)) bossPos.x -= 2;
     enemies.push_back(Enemy::create(EnemyType::Lich, bossPos));
+    applyDifficulty(enemies.back());
     addMessage("An ancient evil stirs... The Lich awaits!");
 }
 
@@ -229,7 +260,7 @@ void Game::generateShop(const Room& room) {
 
     for (int i = 0; i < numItems; i++) {
         ShopItem si;
-        int roll = std::rand() % 4;
+        int roll = std::rand() % 6;
         int tier = std::min(currentFloor - 1, 4);
         if (roll == 0) {
             si.item = Item({0,0}, "Health Potion", '!', ItemType::HealthPotion, 10 + currentFloor * 3);
@@ -242,10 +273,12 @@ void Game::generateShop(const Room& room) {
             Enchantment ench = (currentFloor >= 3) ? Item::rollEnchantment(currentFloor) : Enchantment::None;
             si.item = Item({0,0}, weaponNames[tier], '/', ItemType::Weapon, 3 + tier * 2, ench);
             si.price = 40 + tier * 15;
+        } else if (roll == 4) {
+            si.item = Item({0,0}, "Bomb", 'o', ItemType::Bomb, 10 + currentFloor * 2);
+            si.price = 20 + currentFloor * 5;
         } else {
-            Enchantment ench = (currentFloor >= 3) ? Item::rollEnchantment(currentFloor) : Enchantment::None;
-            si.item = Item({0,0}, armorNames[tier], '[', ItemType::Armor, 2 + tier * 2, ench);
-            si.price = 35 + tier * 15;
+            si.item = Item({0,0}, "Shield Potion", '!', ItemType::ShieldPotion, 3 + currentFloor);
+            si.price = 25 + currentFloor * 5;
         }
         si.sold = false;
         shopInventory.push_back(si);
@@ -259,6 +292,43 @@ void Game::handleShopInteraction() {
         if (key == Key::Escape) {
             addMessage("You leave the merchant.");
             return;
+        }
+
+        // 'S' key maps to Key::Down — use it for sell mode in shop context
+        if (key == Key::Down) {
+            // Sell sub-loop
+            while (true) {
+                renderer.renderSellMenu(player);
+                Key sellKey = Input::getKey();
+                if (sellKey == Key::Escape) break;
+
+                int si = -1;
+                switch (sellKey) {
+                    case Key::Num1: si = 0; break;
+                    case Key::Num2: si = 1; break;
+                    case Key::Num3: si = 2; break;
+                    case Key::Num4: si = 3; break;
+                    case Key::Num5: si = 4; break;
+                    case Key::Num6: si = 5; break;
+                    case Key::Num7: si = 6; break;
+                    case Key::Num8: si = 7; break;
+                    case Key::Num9: si = 8; break;
+                    default: break;
+                }
+
+                if (si >= 0 && si < player.inventory.size()) {
+                    const Item& item = player.inventory.get(si);
+                    int price = item.sellPrice();
+                    if (price <= 0) {
+                        addMessage("Can't sell that.");
+                    } else {
+                        player.gold += price;
+                        addMessage("Sold " + item.name + " for " + std::to_string(price) + " gold.");
+                        player.inventory.remove(si);
+                    }
+                }
+            }
+            continue;
         }
 
         int idx = -1;
@@ -300,13 +370,21 @@ void Game::handleMenu() {
         }
         return "???";
     };
+    auto diffStr = [](Difficulty d) -> std::string {
+        switch (d) {
+            case Difficulty::Easy: return "E";
+            case Difficulty::Normal: return "N";
+            case Difficulty::Hard: return "H";
+        }
+        return "?";
+    };
     int showCount = std::min((int)highScores.size(), 3);
     for (int i = 0; i < showCount; i++) {
         auto& s = highScores[i];
         topScores.push_back(std::to_string(i + 1) + ". " +
             std::to_string(s.score) + " pts - " + classStr(s.playerClass) +
             " F" + std::to_string(s.floor) + " L" + std::to_string(s.level) +
-            " K" + std::to_string(s.kills));
+            " K" + std::to_string(s.kills) + " [" + diffStr(s.difficulty) + "]");
     }
     // Check for save file
     {
@@ -329,6 +407,19 @@ void Game::handleMenu() {
             state = GameState::Playing;
         }
         return;
+    }
+    state = GameState::DifficultySelect;
+}
+
+void Game::handleDifficultySelect() {
+    renderer.renderDifficultySelect();
+    Key key = Input::getKey();
+    switch (key) {
+        case Key::Num1: difficulty = Difficulty::Easy; break;
+        case Key::Num2: difficulty = Difficulty::Normal; break;
+        case Key::Num3: difficulty = Difficulty::Hard; break;
+        case Key::Quit: state = GameState::Menu; return;
+        default: return;
     }
     state = GameState::ClassSelect;
 }
@@ -365,9 +456,15 @@ void Game::handlePlaying() {
                 int dy = step.y - player.pos.y;
                 movePlayer(dx, dy);
                 processTurn();
+                player.turnsPlayed++;
                 if (state != GameState::Playing) return;
+                if (player.pendingLevelUps > 0) {
+                    autoExploring = false;
+                    state = GameState::LevelUp;
+                    return;
+                }
                 renderer.render(map, player, enemies, items, traps, messageLog, currentFloor,
-                                dunGen.currentBiome, merchantPos);
+                                dunGen.currentBiome, merchantPos, static_cast<int>(difficulty));
                 // Small delay for visual feedback
 #ifdef _WIN32
                 Sleep(50);
@@ -380,7 +477,7 @@ void Game::handlePlaying() {
     }
 
     renderer.render(map, player, enemies, items, traps, messageLog, currentFloor,
-                    dunGen.currentBiome, merchantPos);
+                    dunGen.currentBiome, merchantPos, static_cast<int>(difficulty));
 
     Key key = Input::getKey();
 
@@ -446,8 +543,15 @@ void Game::handlePlaying() {
             }
             break;
         }
+        case Key::Wait:
+            addMessage("You wait...");
+            break;
         case Key::AutoExplore:
             autoExploring = true;
+            return;
+        case Key::MessageLog:
+            logScrollOffset = 0;
+            state = GameState::MessageLog;
             return;
         case Key::Save:
             saveGame();
@@ -457,11 +561,16 @@ void Game::handlePlaying() {
         default: return; // don't update enemies on invalid input
     }
 
+    player.turnsPlayed++;
     player.tickCooldown();
     if (player.poisonTurns > 0) {
+        player.damageTaken += player.poisonDmg;
+        player.lastDamageSource = "poison";
         addMessage("Poison deals " + std::to_string(player.poisonDmg) + " damage! (" + std::to_string(player.poisonTurns) + " turns left)");
     }
     if (player.burningTurns > 0) {
+        player.damageTaken += player.burningDmg;
+        player.lastDamageSource = "fire";
         addMessage("Burning deals " + std::to_string(player.burningDmg) + " damage! (" + std::to_string(player.burningTurns) + " turns left)");
     }
     player.tickStatusEffects();
@@ -478,7 +587,7 @@ void Game::handlePlaying() {
     // Haste: bonus movement-only action
     if (player.hasteTurns > 0) {
         renderer.render(map, player, enemies, items, traps, messageLog, currentFloor,
-                        dunGen.currentBiome, merchantPos);
+                        dunGen.currentBiome, merchantPos, static_cast<int>(difficulty));
         Key hasteKey = Input::getKey();
         switch (hasteKey) {
             case Key::Up:    movePlayer(0, -1); break;
@@ -492,6 +601,47 @@ void Game::handlePlaying() {
 
     // Recompute FOV
     FOV::compute(map, player.pos, player.effectiveFovRadius());
+
+    // Check for pending level ups
+    if (player.pendingLevelUps > 0) {
+        state = GameState::LevelUp;
+    }
+}
+
+void Game::handleLevelUp() {
+    renderer.renderLevelUp(player);
+    Key key = Input::getKey();
+    int choice = -1;
+    switch (key) {
+        case Key::Num1: choice = 0; break;
+        case Key::Num2: choice = 1; break;
+        case Key::Num3: choice = 2; break;
+        default: return;
+    }
+    player.applyLevelChoice(choice);
+    player.pendingLevelUps--;
+    addMessage("Level up! You are now level " + std::to_string(player.level) + ".");
+    if (player.pendingLevelUps <= 0) {
+        state = GameState::Playing;
+    }
+}
+
+void Game::handleMessageLog() {
+    renderer.renderMessageLog(messageLog, logScrollOffset);
+    Key key = Input::getKey();
+    switch (key) {
+        case Key::Up:
+            if (logScrollOffset < (int)messageLog.size() - 1) logScrollOffset++;
+            break;
+        case Key::Down:
+            if (logScrollOffset > 0) logScrollOffset--;
+            break;
+        case Key::Escape:
+        case Key::MessageLog:
+            state = GameState::Playing;
+            break;
+        default: break;
+    }
 }
 
 void Game::handleInventory() {
@@ -520,6 +670,51 @@ void Game::handleInventory() {
     }
 
     if (index >= 0 && index < player.inventory.size()) {
+        const Item& item = player.inventory.get(index);
+
+        // Special items that need game state
+        if (item.type == ItemType::Bomb) {
+            int dmg = item.value;
+            int hits = 0;
+            for (auto& e : enemies) {
+                if (e.isAlive() && player.pos.distanceSq(e.pos) <= 4) {
+                    e.hp -= dmg;
+                    if (e.hp < 0) e.hp = 0;
+                    player.damageDealt += dmg;
+                    hits++;
+                    if (!e.isAlive() && e.xpReward > 0) {
+                        player.killCount++;
+                        player.addXP(e.xpReward);
+                        addMessage("Gained " + std::to_string(e.xpReward) + " XP.");
+                        int goldAmt = e.xpReward / 2 + std::rand() % 5;
+                        items.emplace_back(e.pos, std::to_string(goldAmt) + " Gold", '$', ItemType::Gold, goldAmt);
+                        e.xpReward = 0;
+                    }
+                }
+            }
+            player.inventory.remove(index);
+            if (hits > 0) addMessage("BOOM! Bomb hits " + std::to_string(hits) + " enemies for " + std::to_string(dmg) + " damage!");
+            else addMessage("BOOM! The bomb explodes but hits nothing.");
+            state = GameState::Playing;
+            return;
+        }
+
+        if (item.type == ItemType::TeleportScroll) {
+            for (int attempts = 0; attempts < 100; attempts++) {
+                int tx = std::rand() % Map::WIDTH;
+                int ty = std::rand() % Map::HEIGHT;
+                if (map.isWalkable(tx, ty) && !map.isDangerous(tx, ty)) {
+                    player.pos = {tx, ty};
+                    FOV::compute(map, player.pos, player.effectiveFovRadius());
+                    break;
+                }
+            }
+            player.inventory.remove(index);
+            addMessage("You vanish and reappear elsewhere!");
+            state = GameState::Playing;
+            return;
+        }
+
         std::string msg = player.useItem(index);
         if (!msg.empty()) addMessage(msg);
     }
@@ -528,24 +723,24 @@ void Game::handleInventory() {
 void Game::handleGameOver() {
     checkHighScore();
     deleteSaveFile();
-    renderer.renderGameOver(currentFloor, player.level);
+    renderer.renderDeathRecap(player, currentFloor, computeScore());
     Key key = Input::getKey();
     if (key == Key::Quit) {
         running = false;
     } else {
-        state = GameState::ClassSelect;
+        state = GameState::DifficultySelect;
     }
 }
 
 void Game::handleWin() {
     checkHighScore();
     deleteSaveFile();
-    renderer.renderWin(player.level);
+    renderer.renderWin(player, currentFloor, computeScore());
     Key key = Input::getKey();
     if (key == Key::Quit) {
         running = false;
     } else {
-        state = GameState::ClassSelect;
+        state = GameState::DifficultySelect;
     }
 }
 
@@ -572,7 +767,9 @@ void Game::movePlayer(int dx, int dy) {
             }
         }
 
-        std::string msg = resolveCombat(player, *target, atkBonus, 0);
+        int dmgOut = 0;
+        std::string msg = resolveCombat(player, *target, atkBonus, 0, &dmgOut);
+        player.damageDealt += dmgOut;
         addMessage(msg);
 
         // Apply stun from Warrior's Shield Bash
@@ -629,12 +826,40 @@ void Game::movePlayer(int dx, int dy) {
         player.pos.x = nx;
         player.pos.y = ny;
 
+        // Auto-pickup items on walk
+        for (auto& item : items) {
+            if (!item.onGround || item.pos.x != nx || item.pos.y != ny) continue;
+            if (item.type == ItemType::Gold) {
+                player.gold += item.value;
+                addMessage("Picked up " + std::to_string(item.value) + " gold.");
+                item.onGround = false;
+            } else if (!player.inventory.isFull()) {
+                std::string pickMsg = "Picked up " + item.name + ".";
+                if (item.type == ItemType::Weapon) {
+                    int diff = item.value - (player.hasEquippedWeapon() ? player.getWeaponSlot().value : 0);
+                    if (!player.hasEquippedWeapon()) pickMsg += " [new weapon!]";
+                    else if (diff > 0) pickMsg += " [+" + std::to_string(diff) + " ATK vs equipped]";
+                    else if (diff < 0) pickMsg += " [" + std::to_string(diff) + " ATK vs equipped]";
+                } else if (item.type == ItemType::Armor) {
+                    int diff = item.value - (player.hasEquippedArmor() ? player.getArmorSlot().value : 0);
+                    if (!player.hasEquippedArmor()) pickMsg += " [new armor!]";
+                    else if (diff > 0) pickMsg += " [+" + std::to_string(diff) + " DEF vs equipped]";
+                    else if (diff < 0) pickMsg += " [" + std::to_string(diff) + " DEF vs equipped]";
+                }
+                addMessage(pickMsg);
+                player.inventory.add(item);
+                item.onGround = false;
+            }
+        }
+
         // Environmental tile effects
         Tile stepped = map.getTile(nx, ny);
         if (stepped == Tile::Lava) {
             int dmg = 5;
             player.hp -= dmg;
             if (player.hp < 0) player.hp = 0;
+            player.damageTaken += dmg;
+            player.lastDamageSource = "lava";
             addMessage("The lava burns you for " + std::to_string(dmg) + " damage!");
             player.burningTurns = 3;
             player.burningDmg = 2;
@@ -670,12 +895,25 @@ void Game::movePlayer(int dx, int dy) {
 
 void Game::descendStairs() {
     Tile t = map.getTile(player.pos.x, player.pos.y);
+    if (t == Tile::StairsUp) {
+        addMessage("These stairs lead up. You can't go back.");
+        return;
+    }
     if (t != Tile::StairsDown) {
         addMessage("No stairs here.");
         return;
     }
     if (currentFloor >= 8) {
         addMessage("This is the deepest floor.");
+        return;
+    }
+    // Confirmation prompt
+    addMessage("Descend to floor " + std::to_string(currentFloor + 1) + "? Press > again to confirm.");
+    renderer.render(map, player, enemies, items, traps, messageLog, currentFloor,
+                    dunGen.currentBiome, merchantPos, static_cast<int>(difficulty));
+    Key confirm = Input::getKey();
+    if (confirm != Key::Stairs) {
+        addMessage("Staying on this floor.");
         return;
     }
     currentFloor++;
@@ -752,6 +990,7 @@ void Game::updateEnemies() {
                     Vec2 sp = e.pos + dirs[d];
                     if (map.isWalkable(sp.x, sp.y) && !enemyAt(sp.x, sp.y) && sp != player.pos) {
                         enemies.push_back(Enemy::create(EnemyType::Skeleton, sp));
+                        applyDifficulty(enemies.back());
                         enemies.back().awake = true;
                         addMessage("The Necromancer raises a Skeleton!");
                         count = (int)enemies.size(); // update snapshot
@@ -759,6 +998,36 @@ void Game::updateEnemies() {
                     }
                 }
             }
+        }
+
+        // Lich phase change at 50% HP: teleport + mass summon
+        if (e.type == EnemyType::Lich && !e.enraged && e.hp <= e.maxHp / 2) {
+            e.enraged = true;
+            e.attack += 4;
+            // Teleport to random walkable tile
+            for (int attempts = 0; attempts < 100; attempts++) {
+                int tx = std::rand() % Map::WIDTH;
+                int ty = std::rand() % Map::HEIGHT;
+                if (map.isWalkable(tx, ty) && !enemyAt(tx, ty) && !(tx == player.pos.x && ty == player.pos.y)) {
+                    e.pos = {tx, ty};
+                    break;
+                }
+            }
+            // Summon a wave of 3 undead
+            static const Vec2 waveDirs[] = {{0,-1},{0,1},{-1,0},{1,0}};
+            int summoned = 0;
+            for (int d = 0; d < 4 && summoned < 3; d++) {
+                Vec2 sp = e.pos + waveDirs[d];
+                if (map.isWalkable(sp.x, sp.y) && !enemyAt(sp.x, sp.y) && sp != player.pos) {
+                    EnemyType st = (std::rand() % 2 == 0) ? EnemyType::Skeleton : EnemyType::Ghost;
+                    enemies.push_back(Enemy::create(st, sp));
+                    applyDifficulty(enemies.back());
+                    enemies.back().awake = true;
+                    count = (int)enemies.size();
+                    summoned++;
+                }
+            }
+            addMessage("The Lich shrieks! Dark energy erupts as it vanishes into shadow!");
         }
 
         // Lich summoning: every 4 turns when awake
@@ -772,6 +1041,7 @@ void Game::updateEnemies() {
                     if (map.isWalkable(sp.x, sp.y) && !enemyAt(sp.x, sp.y) && sp != player.pos) {
                         EnemyType summonType = (std::rand() % 2 == 0) ? EnemyType::Skeleton : EnemyType::Ghost;
                         enemies.push_back(Enemy::create(summonType, sp));
+                        applyDifficulty(enemies.back());
                         enemies.back().awake = true;
                         addMessage("The Lich summons the undead!");
                         count = (int)enemies.size();
@@ -788,6 +1058,8 @@ void Game::updateEnemies() {
             int damage = std::max(1, rangedDmg - (player.totalDefense()) + variance);
             player.hp -= damage;
             if (player.hp < 0) player.hp = 0;
+            player.damageTaken += damage;
+            player.lastDamageSource = "a " + e.name;
             addMessage(e.name + " shoots you for " + std::to_string(damage) + " damage!");
             continue;
         }
@@ -797,8 +1069,11 @@ void Game::updateEnemies() {
         // Check if enemy is adjacent to player before moving
         int dist = e.pos.distanceSq(player.pos);
         if (dist <= 2) {
+            int dmgIn = 0;
             std::string msg = resolveCombat(e, player, 0,
-                                            player.totalDefense() - player.defense);
+                                            player.totalDefense() - player.defense, &dmgIn);
+            player.damageTaken += dmgIn;
+            player.lastDamageSource = "a " + e.name;
             addMessage(msg);
             if (e.type == EnemyType::Ghost && player.isAlive()) {
                 player.blindTurns = 3;
@@ -877,6 +1152,8 @@ void Game::checkTraps() {
                 int dmg = 8 + currentFloor * 2;
                 player.hp -= dmg;
                 if (player.hp < 0) player.hp = 0;
+                player.damageTaken += dmg;
+                player.lastDamageSource = "a spike trap";
                 addMessage("A spike trap deals " + std::to_string(dmg) + " damage!");
                 break;
             }
@@ -928,7 +1205,10 @@ void Game::processTurn() {
 }
 
 Vec2 Game::bfsNextStep() const {
-    // BFS from player pos to find nearest unexplored walkable tile
+    // BFS from player pos to find nearest target:
+    // - Visible alive enemy (to fight)
+    // - Visible ground item (to pick up)
+    // - Unexplored walkable tile (to explore)
     bool visited[Map::HEIGHT][Map::WIDTH] = {};
     int parentX[Map::HEIGHT][Map::WIDTH];
     int parentY[Map::HEIGHT][Map::WIDTH];
@@ -951,18 +1231,50 @@ Vec2 Game::bfsNextStep() const {
     while (head < tail) {
         Pos cur = queue[head++];
 
-        // Check if this tile is unexplored (and not the player's position)
-        if (!map.isExplored(cur.x, cur.y) && (cur.x != player.pos.x || cur.y != player.pos.y)) {
-            // Trace back to first step from player
-            int tx = cur.x, ty = cur.y;
-            while (parentX[ty][tx] != player.pos.x || parentY[ty][tx] != player.pos.y) {
-                int px = parentX[ty][tx];
-                int py = parentY[ty][tx];
-                tx = px; ty = py;
+        if (cur.x == player.pos.x && cur.y == player.pos.y) goto expand;
+
+        // Check for targets at this tile
+        {
+            bool isTarget = false;
+
+            // Visible enemy?
+            if (map.isVisible(cur.x, cur.y)) {
+                for (auto& e : enemies) {
+                    if (e.isAlive() && e.pos.x == cur.x && e.pos.y == cur.y) {
+                        isTarget = true;
+                        break;
+                    }
+                }
             }
-            return {tx, ty};
+
+            // Visible ground item?
+            if (!isTarget && map.isVisible(cur.x, cur.y)) {
+                for (auto& item : items) {
+                    if (item.onGround && item.pos.x == cur.x && item.pos.y == cur.y) {
+                        isTarget = true;
+                        break;
+                    }
+                }
+            }
+
+            // Unexplored tile?
+            if (!isTarget && !map.isExplored(cur.x, cur.y)) {
+                isTarget = true;
+            }
+
+            if (isTarget) {
+                // Trace back to first step from player
+                int tx = cur.x, ty = cur.y;
+                while (parentX[ty][tx] != player.pos.x || parentY[ty][tx] != player.pos.y) {
+                    int px = parentX[ty][tx];
+                    int py = parentY[ty][tx];
+                    tx = px; ty = py;
+                }
+                return {tx, ty};
+            }
         }
 
+        expand:
         for (int d = 0; d < 4; d++) {
             int nx = cur.x + dx[d];
             int ny = cur.y + dy[d];
@@ -976,20 +1288,12 @@ Vec2 Game::bfsNextStep() const {
         }
     }
 
-    return {-1, -1}; // everything explored
+    return {-1, -1}; // nothing to do
 }
 
 bool Game::shouldStopAutoExplore() const {
-    // Stop if any enemy is visible
-    for (auto& e : enemies) {
-        if (e.isAlive() && map.isVisible(e.pos.x, e.pos.y)) return true;
-    }
-    // Stop if HP < 25%
-    if (player.hp * 4 < player.maxHp) return true;
-    // Stop if item at feet
-    for (auto& item : items) {
-        if (item.onGround && item.pos == player.pos) return true;
-    }
+    // Stop if HP < 40% (safety threshold for auto-combat)
+    if (player.hp * 5 < player.maxHp * 2) return true;
     // Stop if adjacent to merchant
     if (merchantPos.x >= 0) {
         int dx = std::abs(player.pos.x - merchantPos.x);
@@ -1042,7 +1346,22 @@ std::string Game::describeCell(int x, int y) const {
     // Check items
     for (auto& item : items) {
         if (item.onGround && item.pos.x == x && item.pos.y == y) {
-            return item.description();
+            std::string desc = item.description();
+            // Equipment comparison
+            if (item.type == ItemType::Weapon) {
+                int diff = item.value - (player.hasEquippedWeapon() ? player.getWeaponSlot().value : 0);
+                if (!player.hasEquippedWeapon()) desc += " [new!]";
+                else if (diff > 0) desc += " [+" + std::to_string(diff) + " vs equipped]";
+                else if (diff < 0) desc += " [" + std::to_string(diff) + " vs equipped]";
+                else desc += " [same as equipped]";
+            } else if (item.type == ItemType::Armor) {
+                int diff = item.value - (player.hasEquippedArmor() ? player.getArmorSlot().value : 0);
+                if (!player.hasEquippedArmor()) desc += " [new!]";
+                else if (diff > 0) desc += " [+" + std::to_string(diff) + " vs equipped]";
+                else if (diff < 0) desc += " [" + std::to_string(diff) + " vs equipped]";
+                else desc += " [same as equipped]";
+            }
+            return desc;
         }
     }
 
@@ -1087,6 +1406,9 @@ void Game::loadHighScores() {
         int classInt;
         if (iss >> entry.score >> classInt >> entry.floor >> entry.level >> entry.kills) {
             entry.playerClass = static_cast<PlayerClass>(classInt);
+            int diff = 1;
+            iss >> diff;
+            entry.difficulty = static_cast<Difficulty>(diff);
             highScores.push_back(entry);
         }
     }
@@ -1099,7 +1421,8 @@ void Game::saveHighScores() {
     for (int i = 0; i < count; i++) {
         auto& s = highScores[i];
         f << s.score << " " << static_cast<int>(s.playerClass) << " "
-          << s.floor << " " << s.level << " " << s.kills << "\n";
+          << s.floor << " " << s.level << " " << s.kills << " "
+          << static_cast<int>(s.difficulty) << "\n";
     }
 }
 
@@ -1125,7 +1448,11 @@ void Game::saveGame() {
       << player.killCount << " " << currentFloor << " "
       << player.blindTurns << " " << player.slowTurns << " "
       << player.hasteTurns << " " << player.burningTurns << " "
-      << player.burningDmg << " " << player.gold << "\n";
+      << player.burningDmg << " " << player.gold << " "
+      << player.shieldTurns << " " << player.shieldBonus << " "
+      << player.pendingLevelUps << " " << player.turnsPlayed << " "
+      << player.damageDealt << " " << player.damageTaken << " "
+      << player.potionsUsed << " " << static_cast<int>(difficulty) << "\n";
 
     // EQUIPMENT section
     f << "EQUIPMENT\n";
@@ -1249,9 +1576,11 @@ bool Game::loadGame() {
         int cls, px, py, hp, maxHp, bAtk, bDef, lvl, xp, cd, buff;
         int lhp, latk, ldef, pTurns, pDmg, kills, floor;
         int blind, slow, haste, burning, burnDmg, gold;
+        int shieldT, shieldB, pendLvl, turns, dmgDealt, dmgTaken, potUsed, diff;
         f >> cls >> px >> py >> hp >> maxHp >> bAtk >> bDef >> lvl >> xp >> cd >> buff
           >> lhp >> latk >> ldef >> pTurns >> pDmg >> kills >> floor
-          >> blind >> slow >> haste >> burning >> burnDmg >> gold;
+          >> blind >> slow >> haste >> burning >> burnDmg >> gold
+          >> shieldT >> shieldB >> pendLvl >> turns >> dmgDealt >> dmgTaken >> potUsed >> diff;
         f.ignore();
 
         player = Player(static_cast<PlayerClass>(cls));
@@ -1277,6 +1606,14 @@ bool Game::loadGame() {
         player.burningTurns = burning;
         player.burningDmg = burnDmg;
         player.gold = gold;
+        player.shieldTurns = shieldT;
+        player.shieldBonus = shieldB;
+        player.pendingLevelUps = pendLvl;
+        player.turnsPlayed = turns;
+        player.damageDealt = dmgDealt;
+        player.damageTaken = dmgTaken;
+        player.potionsUsed = potUsed;
+        difficulty = static_cast<Difficulty>(diff);
     }
 
     // EQUIPMENT
@@ -1499,6 +1836,7 @@ void Game::checkHighScore() {
     entry.floor = currentFloor;
     entry.level = player.level;
     entry.kills = player.killCount;
+    entry.difficulty = difficulty;
     highScores.push_back(entry);
     std::sort(highScores.begin(), highScores.end(),
               [](const ScoreEntry& a, const ScoreEntry& b) { return a.score > b.score; });

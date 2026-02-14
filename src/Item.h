@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 
-enum class ItemType { HealthPotion, AttackBoost, DefenseBoost, Weapon, Armor, Gold };
+enum class ItemType { HealthPotion, AttackBoost, DefenseBoost, Weapon, Armor, Gold, TeleportScroll, Bomb, ShieldPotion };
 enum class Enchantment { None, Rusty, Sharp, Flaming, Frozen, Vampiric, Blessed, Legendary };
 
 class Item {
@@ -21,6 +21,7 @@ public:
          Enchantment ench = Enchantment::None);
 
     std::string description() const;
+    int sellPrice() const;
     static Enchantment rollEnchantment(int floor, bool legendary = false);
     static Item loadItem(Vec2 pos, const std::string& name, char glyph, ItemType type, int value, Enchantment ench);
 };

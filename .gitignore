@@ -1,7 +1,18 @@
 # Build artifacts
 *.o
 *.exe
+shadowcrypt
 
 # IDE / tool settings
-
 nul
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+shadowcrypt.scores

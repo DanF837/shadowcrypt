@@ -8,12 +8,15 @@
 #include <vector>
 #include <string>
 
-enum class GameState { Menu, ClassSelect, Playing, Inventory, GameOver, Win, Looking };
+enum class Difficulty { Easy, Normal, Hard };
+
+enum class GameState { Menu, ClassSelect, DifficultySelect, Playing, Inventory, GameOver, Win, Looking, LevelUp, MessageLog };
 
 struct ScoreEntry {
     int score;
     PlayerClass playerClass;
     int floor, level, kills;
+    Difficulty difficulty = Difficulty::Normal;
 };
 
 class Game {
@@ -46,6 +49,12 @@ private:
     // Auto-explore
     bool autoExploring = false;
 
+    // Difficulty
+    Difficulty difficulty = Difficulty::Normal;
+
+    // Message log scroll
+    int logScrollOffset = 0;
+
     void newGame(PlayerClass cls);
     void generateFloor();
     void spawnEnemies();
@@ -63,6 +72,9 @@ private:
     void handleWin();
     void handleLooking();
     void handleShopInteraction();
+    void handleDifficultySelect();
+    void handleLevelUp();
+    void handleMessageLog();
 
     void movePlayer(int dx, int dy);
     void descendStairs();
@@ -73,6 +85,7 @@ private:
 
     std::string describeCell(int x, int y) const;
     void generateShop(const Room& room);
+    void applyDifficulty(Enemy& e);
     void processTurn();
     Vec2 bfsNextStep() const;
     bool shouldStopAutoExplore() const;

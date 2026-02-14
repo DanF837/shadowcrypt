@@ -85,7 +85,10 @@ std::string Item::description() const {
         case ItemType::DefenseBoost:  desc = name + " (+" + std::to_string(value) + " DEF permanently)"; break;
         case ItemType::Weapon:        desc = name + " (" + std::to_string(value) + " ATK)"; break;
         case ItemType::Armor:         desc = name + " (" + std::to_string(value) + " DEF)"; break;
-        case ItemType::Gold:          desc = name + " (" + std::to_string(value) + " gold)"; break;
+        case ItemType::Gold:            desc = name + " (" + std::to_string(value) + " gold)"; break;
+        case ItemType::TeleportScroll:  desc = name + " (teleport)"; break;
+        case ItemType::Bomb:            desc = name + " (" + std::to_string(value) + " dmg AoE)"; break;
+        case ItemType::ShieldPotion:    desc = name + " (+" + std::to_string(value) + " DEF, 10 turns)"; break;
     }
     // Append enchantment tags
     if (enchantment == Enchantment::Flaming) desc += " [Burns]";
@@ -94,6 +97,20 @@ std::string Item::description() const {
     else if (enchantment == Enchantment::Blessed) desc += " [Holy]";
     else if (enchantment == Enchantment::Legendary) desc += " [Legendary]";
     return desc;
+}
+
+int Item::sellPrice() const {
+    switch (type) {
+        case ItemType::HealthPotion:    return std::max(1, value);
+        case ItemType::AttackBoost:     return std::max(1, value * 15);
+        case ItemType::DefenseBoost:    return std::max(1, value * 15);
+        case ItemType::Weapon:          return std::max(1, 8 + value * 5);
+        case ItemType::Armor:           return std::max(1, 6 + value * 5);
+        case ItemType::TeleportScroll:  return 10;
+        case ItemType::Bomb:            return 12;
+        case ItemType::ShieldPotion:    return std::max(1, value);
+        default:                        return 0;
+    }
 }
 
 bool Inventory::add(const Item& item) {

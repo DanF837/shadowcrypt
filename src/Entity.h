@@ -50,6 +50,14 @@ public:
     int burningTurns = 0;
     int burningDmg = 2;
     int gold = 0;
+    int shieldTurns = 0;
+    int shieldBonus = 0;
+    int pendingLevelUps = 0;
+    int damageDealt = 0;
+    int damageTaken = 0;
+    int potionsUsed = 0;
+    int turnsPlayed = 0;
+    std::string lastDamageSource;
 
     Player();
     Player(PlayerClass cls);
@@ -57,7 +65,7 @@ public:
     int totalAttack() const;
     int totalDefense() const;
     void addXP(int amount);
-    void levelUp();
+    void applyLevelChoice(int choice);
     int xpToNextLevel() const;
     std::string useItem(int index);
     std::string equipItem(int index);

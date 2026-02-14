@@ -12,10 +12,13 @@ Descend through 8 floors of a dungeon across 3 biomes, fighting enemies, collect
 | ----------------- | ----------------------------------- |
 | WASD / Arrow Keys | Move                                |
 | E                 | Pick up items / Trade with merchant |
+| S                 | Sell items (at merchant)            |
+| M                 | Message log                         |
 | I                 | Open inventory                      |
 | R                 | Use class ability                   |
 | X                 | Examine (look mode)                 |
 | Z                 | Auto-explore                        |
+| T                 | Wait/rest in place                  |
 | > or .            | Descend stairs                      |
 | F                 | Save game                           |
 | Q                 | Quit                                |
@@ -64,22 +67,45 @@ Descend through 8 floors of a dungeon across 3 biomes, fighting enemies, collect
 - **Ai\* Pathfinding** - Enemies navigate around obstacles intelligently
 - **Status Effects** - Poison, burning, blind, slow, and haste
 - **Enchantment System** - Rusty, Sharp, Flaming, Frozen, Vampiric, Blessed, and Legendary gear
-- **Gold Economy** - Collect gold from enemies and buy items from merchants
+- **Gold Economy** - Gold auto-pickup on walk, buy and sell items at merchants
+- **Difficulty Modes** - Easy, Normal, and Hard settings
+- **Level-Up Choices** - Pick Vitality, Power, or Fortitude on each level up
+- **Critical Hits** - 10% chance for double damage (both sides)
+- **Consumables** - Health/Shield Potions, Teleport Scrolls, Bombs, stat scrolls
 - **Look Mode** - Examine any tile for detailed information
-- **Auto-explore** - Automatically walk to unexplored areas
-- **Boss Fights** - Dragon mid-boss (floor 5), Lich final boss (floor 8)
-- **Enemy Abilities** - Necromancers summon skeletons, Liches raise undead, Dragons enrage
+- **Auto-explore** - Automatically walk toward enemies, items, and unexplored areas
+- **Boss Fights** - Dragon mid-boss (floor 5), Lich final boss (floor 8) with phase changes
+- **Enemy Abilities** - Necromancers summon skeletons, Liches raise undead and teleport, Dragons enrage
+- **Death Recap** - Detailed stats screen showing kills, damage, equipment on death
+- **Message Log** - Scroll through your full message history
+- **Colored Messages** - Combat, healing, gold, and status messages color-coded for quick scanning
+- **Enemy HP Display** - Visible enemies shown with HP in the HUD
+- **Equipment Comparison** - See stat differences when picking up or examining gear
+- **Wait/Rest** - Press T to skip your turn and let enemies come to you
 
 ## Building
 
-Requires a C++17 compiler (e.g. MinGW g++).
+Requires a C++17 compiler.
+
+### Windows (MinGW)
 
 ```
 mingw32-make
-```
-
-## Running
-
-```
 .\shadowcrypt.exe
 ```
+
+### Linux
+
+```
+make
+./shadowcrypt
+```
+
+### macOS
+
+```
+make
+./shadowcrypt
+```
+
+On macOS you may need to install Xcode Command Line Tools (`xcode-select --install`) if `g++` is not available.

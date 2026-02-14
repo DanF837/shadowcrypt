@@ -46,6 +46,7 @@ int Player::totalAttack() const {
 int Player::totalDefense() const {
     int def = baseDefense;
     if (hasArmor) def += armorSlot.value;
+    if (shieldTurns > 0) def += shieldBonus;
     return def;
 }
 
@@ -53,16 +54,27 @@ void Player::addXP(int amount) {
     xp += amount;
     while (xp >= xpToNextLevel()) {
         xp -= xpToNextLevel();
-        levelUp();
+        level++;
+        pendingLevelUps++;
     }
 }
 
-void Player::levelUp() {
-    level++;
-    maxHp += lvlHp;
-    hp = std::min(hp + lvlHp + 5, maxHp);
-    baseAttack += lvlAtk;
-    baseDefense += lvlDef;
+void Player::applyLevelChoice(int choice) {
+    hp = std::min(hp + 5, maxHp); // small heal on any choice
+    switch (choice) {
+        case 0: // Vitality
+            maxHp += lvlHp;
+            hp = std::min(hp + lvlHp, maxHp);
+            break;
+        case 1: // Power
+            baseAttack += std::max(1, lvlAtk);
+            maxHp += 2;
+            break;
+        case 2: // Fortitude
+            baseDefense += std::max(1, lvlDef);
+            maxHp += 2;
+            break;
+    }
 }
 
 int Player::xpToNextLevel() const {
@@ -158,6 +170,7 @@ void Player::tickStatusEffects() {
     if (blindTurns > 0) blindTurns--;
     if (slowTurns > 0) slowTurns--;
     if (hasteTurns > 0) hasteTurns--;
+    if (shieldTurns > 0) shieldTurns--;
 }
 
 int Player::effectiveFovRadius() const {
@@ -173,7 +186,16 @@ std::string Player::useItem(int index) {
             int heal = item.value;
             if (playerClass == PlayerClass::Cleric) heal = heal * 3 / 2;
             hp = std::min(hp + heal, maxHp);
+            potionsUsed++;
             std::string msg = "Used " + item.name + ", healed " + std::to_string(heal) + " HP.";
+            inventory.remove(index);
+            return msg;
+        }
+        case ItemType::ShieldPotion: {
+            shieldTurns = 10;
+            shieldBonus = item.value;
+            potionsUsed++;
+            std::string msg = "Used " + item.name + ", DEF +" + std::to_string(shieldBonus) + " for 10 turns!";
             inventory.remove(index);
             return msg;
         }
@@ -194,6 +216,8 @@ std::string Player::useItem(int index) {
         case ItemType::Armor:
             return equipItem(index);
         case ItemType::Gold:
+        case ItemType::TeleportScroll:
+        case ItemType::Bomb:
             return "";
     }
     return "";

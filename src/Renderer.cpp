@@ -1,6 +1,7 @@
 #include "Renderer.h"
 #include "Item.h"
 #include <cstdio>
+#include <algorithm>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -11,6 +12,9 @@ static void enableANSI() {
     SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
 }
 static bool ansiEnabled = (enableANSI(), true);
+#else
+#include <sys/ioctl.h>
+#include <unistd.h>
 #endif
 
 void Renderer::clearScreen() {
@@ -32,6 +36,62 @@ void Renderer::setColor(int fg, int bg) {
 
 void Renderer::resetColor() {
     buffer += "\033[0m";
+}
+
+void Renderer::getTerminalSize(int& cols, int& rows) {
+#ifdef _WIN32
+    CONSOLE_SCREEN_BUFFER_INFO csbi;
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &csbi)) {
+        cols = csbi.srWindow.Right - csbi.srWindow.Left + 1;
+        rows = csbi.srWindow.Bottom - csbi.srWindow.Top + 1;
+    } else {
+        cols = 80; rows = 24;
+    }
+#else
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0) {
+        cols = ws.ws_col;
+        rows = ws.ws_row;
+    } else {
+        cols = 80; rows = 24;
+    }
+#endif
+}
+
+std::string Renderer::getMessageColor(const std::string& msg) const {
+    if (msg.find("CRITICAL") != std::string::npos || msg.find("Critical") != std::string::npos)
+        return "\033[1;31m";
+    if (msg.find("dies!") != std::string::npos || msg.find("BOOM") != std::string::npos)
+        return "\033[1;33m";
+    if (msg.find("damage") != std::string::npos || msg.find("burns you") != std::string::npos ||
+        msg.find("shoots you") != std::string::npos || msg.find("lava") != std::string::npos ||
+        msg.find("enraged") != std::string::npos || msg.find("Burning") != std::string::npos)
+        return "\033[31m";
+    if (msg.find("hits ") != std::string::npos)
+        return "\033[33m";
+    if (msg.find("gold") != std::string::npos || msg.find("Gold") != std::string::npos ||
+        msg.find("Sold") != std::string::npos || msg.find("Bought") != std::string::npos)
+        return "\033[33m";
+    if (msg.find("heal") != std::string::npos || msg.find("restore") != std::string::npos ||
+        msg.find("drains life") != std::string::npos)
+        return "\033[32m";
+    if (msg.find("Level up") != std::string::npos || msg.find("XP") != std::string::npos)
+        return "\033[36m";
+    if (msg.find("poison") != std::string::npos || msg.find("Poison") != std::string::npos ||
+        msg.find("blind") != std::string::npos || msg.find("stun") != std::string::npos ||
+        msg.find("trap") != std::string::npos || msg.find("Slow") != std::string::npos ||
+        msg.find("sluggish") != std::string::npos)
+        return "\033[35m";
+    if (msg.find("descend") != std::string::npos || msg.find("Descend") != std::string::npos ||
+        msg.find("Floor") != std::string::npos)
+        return "\033[36m";
+    return "\033[37m";
+}
+
+void Renderer::printCentered(int y, int termW, const std::string& text) {
+    int x = std::max(0, (termW - (int)text.size()) / 2);
+    moveCursor(x, y);
+    buffer += text;
 }
 
 char Renderer::tileChar(Tile t, Biome biome) const {
@@ -79,7 +139,7 @@ void Renderer::render(const Map& map, const Player& player,
                       const std::vector<Trap>& traps,
                       const std::vector<std::string>& log,
                       int floor, Biome biome,
-                      Vec2 merchantPos) {
+                      Vec2 merchantPos, int difficulty) {
     clearScreen();
 
     // Draw map
@@ -116,7 +176,10 @@ void Renderer::render(const Map& map, const Player& player,
             case ItemType::DefenseBoost: setColor(6); break;
             case ItemType::Weapon:       setColor(3); break;
             case ItemType::Armor:        setColor(2); break;
-            case ItemType::Gold:         setColor(3); break;
+            case ItemType::Gold:           setColor(3); break;
+            case ItemType::TeleportScroll: setColor(6); break;
+            case ItemType::Bomb:           setColor(1); break;
+            case ItemType::ShieldPotion:   setColor(4); break;
         }
         buffer += item.glyph;
         resetColor();
@@ -165,11 +228,17 @@ void Renderer::render(const Map& map, const Player& player,
     buffer += '@';
     resetColor();
 
-    // HUD area
+    // HUD area — separated from map with divider
     int hudY = Map::HEIGHT;
 
-    // HP bar
+    // Divider line
     moveCursor(0, hudY);
+    buffer += "\033[90m";
+    for (int i = 0; i < Map::WIDTH; i++) buffer += '\xC4'; // ─
+    resetColor();
+
+    // HP bar + core stats on one line
+    moveCursor(0, hudY + 1);
     buffer += "\033[1;37m";
     buffer += "HP: ";
     int barLen = 20;
@@ -179,60 +248,106 @@ void Renderer::render(const Map& map, const Player& player,
     buffer += "\033[40m";
     for (int i = filled; i < barLen; i++) buffer += ' ';
     resetColor();
-    buffer += " " + std::to_string(player.hp) + "/" + std::to_string(player.maxHp);
-
-    // Stats line
-    moveCursor(0, hudY + 1);
-    buffer += "\033[1;37m";
-    buffer += "ATK:" + std::to_string(player.totalAttack()) +
+    buffer += " \033[1;37m" + std::to_string(player.hp) + "/" + std::to_string(player.maxHp);
+    buffer += "  ATK:" + std::to_string(player.totalAttack()) +
               " DEF:" + std::to_string(player.totalDefense()) +
               " LVL:" + std::to_string(player.level) +
               " XP:" + std::to_string(player.xp) + "/" + std::to_string(player.xpToNextLevel()) +
               " Floor:" + std::to_string(floor) +
-              " Gold:" + std::to_string(player.gold);
-    if (player.poisonTurns > 0) {
-        buffer += " \033[32m[POISON:" + std::to_string(player.poisonTurns) + "]\033[1;37m";
-    }
-    if (player.burningTurns > 0) {
-        buffer += " \033[31m[BURN:" + std::to_string(player.burningTurns) + "]\033[1;37m";
-    }
-    if (player.blindTurns > 0) {
-        buffer += " \033[35m[BLIND:" + std::to_string(player.blindTurns) + "]\033[1;37m";
-    }
-    if (player.slowTurns > 0) {
-        buffer += " \033[36m[SLOW:" + std::to_string(player.slowTurns) + "]\033[1;37m";
-    }
-    if (player.hasteTurns > 0) {
-        buffer += " \033[33m[HASTE:" + std::to_string(player.hasteTurns) + "]\033[1;37m";
-    }
+              " \033[33mGold:" + std::to_string(player.gold);
+    if (difficulty == 0) buffer += " \033[32m[EASY]";
+    else if (difficulty == 2) buffer += " \033[31m[HARD]";
     resetColor();
 
-    // Ability status + controls
+    // Status effects + ability (own line, only meaningful content)
     moveCursor(0, hudY + 2);
     buffer += "\033[90m";
     buffer += "[R] " + player.abilityName();
     if (player.abilityBuffActive) {
-        buffer += " \033[1;32m[READY]\033[90m";
+        buffer += " \033[1;32m[ACTIVE]\033[90m";
     } else if (player.abilityCooldown > 0) {
         buffer += " (" + std::to_string(player.abilityCooldown) + " turns)";
     } else {
         buffer += " \033[33m(Ready)\033[90m";
     }
-    buffer += "  [WASD]Move [E]Pick up [I]Inv [>]Stairs [X]Look [Z]Explore [F]Save [Q]Quit";
+    if (player.poisonTurns > 0) {
+        buffer += "  \033[32m[POISON:" + std::to_string(player.poisonTurns) + "]\033[90m";
+    }
+    if (player.burningTurns > 0) {
+        buffer += "  \033[31m[BURN:" + std::to_string(player.burningTurns) + "]\033[90m";
+    }
+    if (player.blindTurns > 0) {
+        buffer += "  \033[35m[BLIND:" + std::to_string(player.blindTurns) + "]\033[90m";
+    }
+    if (player.slowTurns > 0) {
+        buffer += "  \033[36m[SLOW:" + std::to_string(player.slowTurns) + "]\033[90m";
+    }
+    if (player.hasteTurns > 0) {
+        buffer += "  \033[33m[HASTE:" + std::to_string(player.hasteTurns) + "]\033[90m";
+    }
+    if (player.shieldTurns > 0) {
+        buffer += "  \033[34m[SHIELD:" + std::to_string(player.shieldTurns) + "]\033[90m";
+    }
     resetColor();
 
-    // Message log (last 5 messages)
-    int logStart = hudY + 3;
-    int logCount = std::min((int)log.size(), 5);
+    // Controls hint
+    moveCursor(0, hudY + 3);
+    buffer += "\033[90m";
+    buffer += "[WASD]Move [E]Pick up [I]Inv [>]Stairs [X]Look [Z]Explore [T]Wait [Q]Quit";
+    resetColor();
+
+    // Divider before messages
+    moveCursor(0, hudY + 4);
+    buffer += "\033[90m";
+    for (int i = 0; i < Map::WIDTH; i++) buffer += '\xC4'; // ─
+    resetColor();
+
+    // Visible enemies on right side of status line
+    {
+        std::string enemyInfo;
+        int shown = 0;
+        for (auto& e : enemies) {
+            if (!e.isAlive() || !map.isVisible(e.pos.x, e.pos.y)) continue;
+            if (shown > 0) enemyInfo += "  ";
+            // Apply enemy color
+            switch (e.type) {
+                case EnemyType::Rat:         enemyInfo += "\033[32m"; break;
+                case EnemyType::Skeleton:    enemyInfo += "\033[37m"; break;
+                case EnemyType::Ghost:       enemyInfo += "\033[35m"; break;
+                case EnemyType::Demon:       enemyInfo += "\033[31m"; break;
+                case EnemyType::Dragon:      enemyInfo += "\033[1;31m"; break;
+                case EnemyType::Archer:      enemyInfo += "\033[33m"; break;
+                case EnemyType::Necromancer: enemyInfo += "\033[35m"; break;
+                case EnemyType::Lich:        enemyInfo += "\033[1;35m"; break;
+            }
+            enemyInfo += e.glyph;
+            enemyInfo += ":" + std::to_string(e.hp) + "/" + std::to_string(e.maxHp);
+            enemyInfo += "\033[0m";
+            shown++;
+            if (shown >= 5) break;
+        }
+        if (shown > 0) {
+            moveCursor(55, hudY + 2);
+            buffer += enemyInfo;
+        }
+    }
+
+    // Message log (last 4 messages) with colored text
+    int logStart = hudY + 5;
+    int logCount = std::min((int)log.size(), 4);
     for (int i = 0; i < logCount; i++) {
         moveCursor(0, logStart + i);
-        if (i == 0) {
-            buffer += "\033[1;37m";
+        int age = logCount - 1 - i; // 0=newest, 1=second newest, etc.
+        std::string msg = log[log.size() - logCount + i];
+        if ((int)msg.size() > Map::WIDTH) msg = msg.substr(0, Map::WIDTH);
+        if (age == 0) {
+            buffer += "\033[1m"; // bold
+            buffer += getMessageColor(msg);
+        } else if (age == 1) {
+            buffer += getMessageColor(msg);
         } else {
             buffer += "\033[90m";
         }
-        std::string msg = log[log.size() - logCount + i];
-        if ((int)msg.size() > Map::WIDTH) msg = msg.substr(0, Map::WIDTH);
         buffer += msg;
         resetColor();
     }
@@ -284,9 +399,9 @@ void Renderer::renderWithCursor(const Map& map, const Player& player,
     }
     resetColor();
 
-    // Show description on HUD
+    // Show description on HUD — overwrite the controls line
     int hudY = Map::HEIGHT;
-    moveCursor(0, hudY + 2);
+    moveCursor(0, hudY + 3);
     buffer += "\033[K"; // clear line
     buffer += "\033[1;36m";
     buffer += "[LOOK] " + desc + " (ESC/X=exit)";
@@ -299,56 +414,91 @@ void Renderer::renderWithCursor(const Map& map, const Player& player,
 void Renderer::renderTitle(const std::vector<std::string>& topScores, bool hasSaveFile) {
     clearScreen();
 
-    moveCursor(20, 2);
+    int tw, th;
+    getTerminalSize(tw, th);
+
+    // Logo lines (kept as-is)
+    const char* logo[] = {
+        R"( _____  _               _                              _   )",
+        R"(/ ____|| |             | |                            | |  )",
+        R"(| (___ | |__   __ _  __| | _____      _____ _ __ _   _| |_ )",
+        R"( \___ \| '_ \ / _` |/ _` |/ _ \ \ /\ / / __|  __| | | | __|)",
+        R"( ____) | | | | (_| | (_| | (_) \ V  V / (__| |  | |_| | |_ )",
+        R"(|_____/|_| |_|\__,_|\__,_|\___/ \_/\_/ \___|_|   \__, |\__|)",
+        R"(                                                  __/ |    )",
+        R"(                                                 |___/     )",
+    };
+    int logoW = 62;
+    int logoH = 8;
+
+    // Calculate vertical layout to center everything
+    int scoreBlock = topScores.empty() ? 0 : (int)topScores.size() + 2;
+    int totalH = logoH + 2 + scoreBlock + 3 + 2; // logo + subtitle + scores + menu/divider/tagline + padding
+    int startY = std::max(1, (th - totalH) / 2);
+
+    // Draw logo centered
     buffer += "\033[1;31m";
-    buffer += R"( _____  _               _                              _   )";
-    moveCursor(20, 3);
-    buffer += R"(/ ____|| |             | |                            | |  )";
-    moveCursor(20, 4);
-    buffer += R"(| (___ | |__   __ _  __| | _____      _____ _ __ _   _| |_ )";
-    moveCursor(20, 5);
-    buffer += R"( \___ \| '_ \ / _` |/ _` |/ _ \ \ /\ / / __|  __| | | | __|)";
-    moveCursor(20, 6);
-    buffer += R"( ____) | | | | (_| | (_| | (_) \ V  V / (__| |  | |_| | |_ )";
-    moveCursor(20, 7);
-    buffer += R"(|_____/|_| |_|\__,_|\__,_|\___/ \_/\_/ \___|_|   \__, |\__|)";
-    moveCursor(20, 8);
-    buffer += R"(                                                  __/ |    )";
-    moveCursor(20, 9);
-    buffer += R"(                                                 |___/     )";
+    for (int i = 0; i < logoH; i++) {
+        int lx = std::max(0, (tw - logoW) / 2);
+        moveCursor(lx, startY + i);
+        buffer += logo[i];
+    }
     resetColor();
 
-    moveCursor(30, 11);
+    int y = startY + logoH + 1;
+
+    // Subtitle
     buffer += "\033[1;33m";
-    buffer += "A Roguelike Dungeon Crawler";
+    printCentered(y, tw, "A Roguelike Dungeon Crawler");
     resetColor();
+    y += 2;
 
+    // High scores
     if (!topScores.empty()) {
-        moveCursor(30, 13);
-        buffer += "\033[1;37m";
-        buffer += "--- HIGH SCORES ---";
+        buffer += "\033[90m";
+        std::string divider(std::min(30, tw - 4), '-');
+        printCentered(y, tw, divider);
         resetColor();
+        y++;
+
+        buffer += "\033[1;37m";
+        printCentered(y, tw, "HIGH SCORES");
+        resetColor();
+        y++;
+
         for (int i = 0; i < (int)topScores.size(); i++) {
-            moveCursor(28, 14 + i);
             buffer += "\033[33m";
-            buffer += topScores[i];
+            printCentered(y, tw, topScores[i]);
             resetColor();
+            y++;
         }
+
+        buffer += "\033[90m";
+        printCentered(y, tw, divider);
+        resetColor();
+        y++;
     }
 
-    int menuY = topScores.empty() ? 15 : 18;
-    moveCursor(22, menuY);
+    y++;
+
+    // Menu options
     buffer += "\033[1;37m";
     if (hasSaveFile) {
-        buffer += "[ENTER] New Game  [L] Continue  [H] Help  [Q] Quit";
+        printCentered(y, tw, "[ENTER] New Game    [L] Continue    [H] Help    [Q] Quit");
     } else {
-        buffer += "[ENTER] Play   [H] How to Play   [Q] Quit";
+        printCentered(y, tw, "[ENTER] Play    [H] How to Play    [Q] Quit");
     }
     resetColor();
+    y += 2;
 
-    moveCursor(25, menuY + 2);
+    // Tagline
     buffer += "\033[90m";
-    buffer += "Descend 8 floors. Slay the Lich.";
+    printCentered(y, tw, "Descend 8 floors. Slay the Lich.");
+    resetColor();
+    y += 2;
+
+    buffer += "\033[90m";
+    printCentered(y, tw, "v1.0");
     resetColor();
 
     std::fputs(buffer.c_str(), stdout);
@@ -358,56 +508,113 @@ void Renderer::renderTitle(const std::vector<std::string>& topScores, bool hasSa
 void Renderer::renderGameOver(int floor, int level) {
     clearScreen();
 
-    moveCursor(30, 8);
+    int tw, th;
+    getTerminalSize(tw, th);
+    int y = std::max(1, th / 2 - 4);
+
     buffer += "\033[1;31m";
-    buffer += "=== YOU HAVE DIED ===";
+    printCentered(y, tw, "=== YOU HAVE DIED ===");
     resetColor();
 
-    moveCursor(28, 11);
+    y += 3;
     buffer += "\033[37m";
-    buffer += "Reached Floor " + std::to_string(floor) + ", Level " + std::to_string(level);
+    printCentered(y, tw, "Reached Floor " + std::to_string(floor) + ", Level " + std::to_string(level));
     resetColor();
 
-    moveCursor(25, 14);
+    y += 3;
     buffer += "\033[90m";
-    buffer += "The dungeon claims another soul...";
+    printCentered(y, tw, "The dungeon claims another soul...");
     resetColor();
 
-    moveCursor(24, 17);
+    y += 3;
     buffer += "\033[1;37m";
-    buffer += "Press [R] to retry or [Q] to quit";
+    printCentered(y, tw, "Press [R] to retry or [Q] to quit");
     resetColor();
 
     std::fputs(buffer.c_str(), stdout);
     std::fflush(stdout);
 }
 
-void Renderer::renderWin(int level) {
+void Renderer::renderWin(const Player& player, int floor, int score) {
     clearScreen();
 
-    moveCursor(28, 8);
+    int tw, th;
+    getTerminalSize(tw, th);
+    int pad = std::max(2, (tw - 50) / 2);
+    int y = std::max(1, (th - 22) / 2);
+
     buffer += "\033[1;33m";
-    buffer += "=== VICTORY! ===";
+    printCentered(y, tw, "=== VICTORY! ===");
     resetColor();
+    y += 2;
 
-    moveCursor(22, 11);
     buffer += "\033[1;37m";
-    buffer += "You have slain the Lich and conquered the dungeon!";
+    printCentered(y, tw, "You have slain the Lich and conquered the dungeon!");
     resetColor();
+    y += 1;
 
-    moveCursor(28, 13);
-    buffer += "\033[37m";
-    buffer += "Final Level: " + std::to_string(level);
-    resetColor();
-
-    moveCursor(20, 16);
     buffer += "\033[33m";
-    buffer += "The dungeon trembles as light returns...";
+    printCentered(y, tw, "The dungeon trembles as light returns...");
     resetColor();
+    y += 2;
 
-    moveCursor(24, 19);
+    auto statLine = [&](const std::string& label, const std::string& val) {
+        moveCursor(pad, y);
+        buffer += "\033[90m" + label;
+        moveCursor(pad + 18, y);
+        buffer += "\033[1;37m" + val;
+        resetColor();
+        y++;
+    };
+
+    auto classStr = [](PlayerClass c) -> std::string {
+        switch (c) {
+            case PlayerClass::Warrior: return "Warrior";
+            case PlayerClass::Rogue:   return "Rogue";
+            case PlayerClass::Mage:    return "Mage";
+            case PlayerClass::Cleric:  return "Cleric";
+        }
+        return "???";
+    };
+
+    statLine("Class:", classStr(player.playerClass));
+    statLine("Level:", std::to_string(player.level));
+    statLine("Floor:", std::to_string(floor));
+    statLine("Turns:", std::to_string(player.turnsPlayed));
+    statLine("Kills:", std::to_string(player.killCount));
+    statLine("Gold:", std::to_string(player.gold));
+    statLine("Damage Dealt:", std::to_string(player.damageDealt));
+    statLine("Damage Taken:", std::to_string(player.damageTaken));
+    statLine("Potions Used:", std::to_string(player.potionsUsed));
+    y++;
+
+    moveCursor(pad, y);
+    buffer += "\033[90mWeapon: \033[33m";
+    if (player.hasEquippedWeapon()) {
+        buffer += player.getWeaponSlot().name + " (+" + std::to_string(player.getWeaponSlot().value) + " ATK)";
+    } else {
+        buffer += "(none)";
+    }
+    resetColor();
+    y++;
+
+    moveCursor(pad, y);
+    buffer += "\033[90mArmor:  \033[32m";
+    if (player.hasEquippedArmor()) {
+        buffer += player.getArmorSlot().name + " (+" + std::to_string(player.getArmorSlot().value) + " DEF)";
+    } else {
+        buffer += "(none)";
+    }
+    resetColor();
+    y += 2;
+
+    buffer += "\033[1;33m";
+    printCentered(y, tw, "Score: " + std::to_string(score));
+    resetColor();
+    y += 2;
+
     buffer += "\033[1;37m";
-    buffer += "Press [R] to play again or [Q] to quit";
+    printCentered(y, tw, "Press [R] to play again or [Q] to quit");
     resetColor();
 
     std::fputs(buffer.c_str(), stdout);
@@ -417,85 +624,85 @@ void Renderer::renderWin(int level) {
 void Renderer::renderHelp() {
     clearScreen();
 
-    moveCursor(28, 1);
+    int tw, th;
+    getTerminalSize(tw, th);
+    int pad = std::max(2, (tw - 72) / 2); // left padding to center a ~72 char block
+    int y = std::max(0, (th - 24) / 2);
+
+    // Title
     buffer += "\033[1;33m";
-    buffer += "=== HOW TO PLAY ===";
+    printCentered(y, tw, "=== HOW TO PLAY ===");
     resetColor();
+    y += 2;
 
-    moveCursor(5, 3);
-    buffer += "\033[1;37m";
-    buffer += "Movement:";
-    resetColor();
-    moveCursor(7, 4);
-    buffer += "\033[37m";
-    buffer += "WASD or Arrow Keys to move";
-    resetColor();
+    // Movement
+    moveCursor(pad, y);
+    buffer += "\033[1;37mMovement:\033[0m";
+    moveCursor(pad + 2, y + 1);
+    buffer += "\033[37mWASD or Arrow Keys to move\033[0m";
+    y += 3;
 
-    moveCursor(5, 6);
-    buffer += "\033[1;37m";
-    buffer += "Actions:";
-    resetColor();
-    moveCursor(7, 7);
-    buffer += "\033[37m";
-    buffer += "E = Pick up/Trade    I = Open inventory    R = Use ability";
-    moveCursor(7, 8);
-    buffer += "> or . = Descend stairs    X = Examine    Z = Auto-explore    Q = Quit";
-    resetColor();
+    // Actions
+    moveCursor(pad, y);
+    buffer += "\033[1;37mActions:\033[0m";
+    moveCursor(pad + 2, y + 1);
+    buffer += "\033[37mE = Pick up/Trade    I = Open inventory    R = Use ability\033[0m";
+    moveCursor(pad + 2, y + 2);
+    buffer += "\033[37m> or . = Descend stairs    X = Examine    Z = Auto-explore    Q = Quit\033[0m";
+    moveCursor(pad + 2, y + 3);
+    buffer += "\033[37mS = Sell items (at merchant)    M = Message log    T = Wait/Rest\033[0m";
+    moveCursor(pad + 2, y + 4);
+    buffer += "\033[37mItems and gold are auto-picked up on walk\033[0m";
+    y += 6;
 
-    moveCursor(5, 10);
-    buffer += "\033[1;37m";
-    buffer += "Inventory:";
-    resetColor();
-    moveCursor(7, 11);
-    buffer += "\033[37m";
-    buffer += "1-9 to use/equip item    ESC or I to close";
-    resetColor();
+    // Inventory
+    moveCursor(pad, y);
+    buffer += "\033[1;37mInventory:\033[0m";
+    moveCursor(pad + 2, y + 1);
+    buffer += "\033[37m1-9 to use/equip item    ESC or I to close\033[0m";
+    y += 3;
 
-    moveCursor(5, 13);
-    buffer += "\033[1;37m";
-    buffer += "Combat:";
-    resetColor();
-    moveCursor(7, 14);
-    buffer += "\033[37m";
-    buffer += "Bump into enemies to attack. They strike back when adjacent.";
-    resetColor();
+    // Combat
+    moveCursor(pad, y);
+    buffer += "\033[1;37mCombat:\033[0m";
+    moveCursor(pad + 2, y + 1);
+    buffer += "\033[37mBump into enemies to attack. They strike back when adjacent.\033[0m";
+    y += 3;
 
-    moveCursor(5, 16);
-    buffer += "\033[1;37m";
-    buffer += "Goal:";
-    resetColor();
-    moveCursor(7, 17);
-    buffer += "\033[37m";
-    buffer += "Descend 8 floors and defeat the Lich!";
-    resetColor();
+    // Goal
+    moveCursor(pad, y);
+    buffer += "\033[1;37mGoal:\033[0m";
+    moveCursor(pad + 2, y + 1);
+    buffer += "\033[37mDescend 8 floors and defeat the Lich!\033[0m";
+    y += 3;
 
-    moveCursor(5, 19);
-    buffer += "\033[1;37m";
-    buffer += "Symbols:";
-    resetColor();
-    moveCursor(7, 20);
+    // Symbols
+    moveCursor(pad, y);
+    buffer += "\033[1;37mSymbols:\033[0m";
+    moveCursor(pad + 2, y + 1);
     buffer += "\033[1;33m@\033[37m You   ";
     buffer += "\033[32mr\033[37m Rat   ";
     buffer += "\033[37ms\033[37m Skeleton   ";
     buffer += "\033[35mg\033[37m Ghost   ";
     buffer += "\033[31mD\033[37m Demon/Dragon   ";
     buffer += "\033[33ma\033[37m Archer";
-    moveCursor(7, 21);
+    moveCursor(pad + 2, y + 2);
     buffer += "\033[35mn\033[37m Necromancer   ";
     buffer += "\033[1;35mL\033[37m Lich   ";
     buffer += "\033[1;33mM\033[37m Merchant   ";
     buffer += "\033[33m$\033[37m Gold";
-    moveCursor(7, 22);
+    moveCursor(pad + 2, y + 3);
     buffer += "\033[31m!\033[37m Potion   ";
     buffer += "\033[36m?\033[37m Scroll   ";
     buffer += "\033[33m/\033[37m Weapon   ";
     buffer += "\033[32m[\033[37m Armor   ";
     buffer += "\033[33m>\033[37m Stairs";
     resetColor();
+    y += 5;
 
-    moveCursor(24, 24);
+    // Footer
     buffer += "\033[90m";
-    buffer += "Press any key to return...";
+    printCentered(y + 1, tw, "Press any key to return...");
     resetColor();
 
     std::fputs(buffer.c_str(), stdout);
@@ -505,60 +712,53 @@ void Renderer::renderHelp() {
 void Renderer::renderClassSelect() {
     clearScreen();
 
-    moveCursor(26, 1);
+    int tw, th;
+    getTerminalSize(tw, th);
+    int pad = std::max(2, (tw - 64) / 2);
+    int y = std::max(0, (th - 22) / 2);
+
     buffer += "\033[1;33m";
-    buffer += "=== CHOOSE YOUR CLASS ===";
+    printCentered(y, tw, "=== CHOOSE YOUR CLASS ===");
     resetColor();
+    y += 3;
 
-    moveCursor(5, 4);
-    buffer += "\033[1;31m";
-    buffer += "[1] Warrior";
-    resetColor();
-    moveCursor(9, 5);
-    buffer += "\033[37m";
-    buffer += "HP: 40  ATK: 4  DEF: 4";
-    moveCursor(9, 6);
-    buffer += "Ability: Shield Bash - Bonus damage + stun enemy (8 turn CD)";
-    resetColor();
+    moveCursor(pad, y);
+    buffer += "\033[1;31m[1] Warrior\033[0m";
+    moveCursor(pad + 4, y + 1);
+    buffer += "\033[37mHP: 40  ATK: 4  DEF: 4\033[0m";
+    moveCursor(pad + 4, y + 2);
+    buffer += "\033[37mAbility: Shield Bash - Bonus damage + stun enemy (8 turn CD)\033[0m";
+    y += 4;
 
-    moveCursor(5, 8);
-    buffer += "\033[1;32m";
-    buffer += "[2] Rogue";
-    resetColor();
-    moveCursor(9, 9);
-    buffer += "\033[37m";
-    buffer += "HP: 25  ATK: 7  DEF: 1";
-    moveCursor(9, 10);
-    buffer += "Ability: Backstab - Next attack deals 3x damage (6 turn CD)";
-    resetColor();
+    moveCursor(pad, y);
+    buffer += "\033[1;32m[2] Rogue\033[0m";
+    moveCursor(pad + 4, y + 1);
+    buffer += "\033[37mHP: 25  ATK: 7  DEF: 1\033[0m";
+    moveCursor(pad + 4, y + 2);
+    buffer += "\033[37mAbility: Backstab - Next attack deals 3x damage (6 turn CD)\033[0m";
+    y += 4;
 
-    moveCursor(5, 12);
-    buffer += "\033[1;34m";
-    buffer += "[3] Mage";
-    resetColor();
-    moveCursor(9, 13);
-    buffer += "\033[37m";
-    buffer += "HP: 20  ATK: 8  DEF: 1";
-    moveCursor(9, 14);
-    buffer += "Ability: Fireball - AoE damage to nearby enemies (10 turn CD)";
-    resetColor();
+    moveCursor(pad, y);
+    buffer += "\033[1;34m[3] Mage\033[0m";
+    moveCursor(pad + 4, y + 1);
+    buffer += "\033[37mHP: 20  ATK: 8  DEF: 1\033[0m";
+    moveCursor(pad + 4, y + 2);
+    buffer += "\033[37mAbility: Fireball - AoE damage to nearby enemies (10 turn CD)\033[0m";
+    y += 4;
 
-    moveCursor(5, 16);
-    buffer += "\033[1;33m";
-    buffer += "[4] Cleric";
-    resetColor();
-    moveCursor(9, 17);
-    buffer += "\033[37m";
-    buffer += "HP: 35  ATK: 3  DEF: 3";
-    moveCursor(9, 18);
-    buffer += "Ability: Divine Heal - Restore 50% HP (12 turn CD)";
-    moveCursor(9, 19);
-    buffer += "Passive: Potions heal 50% more";
-    resetColor();
+    moveCursor(pad, y);
+    buffer += "\033[1;33m[4] Cleric\033[0m";
+    moveCursor(pad + 4, y + 1);
+    buffer += "\033[37mHP: 35  ATK: 3  DEF: 3\033[0m";
+    moveCursor(pad + 4, y + 2);
+    buffer += "\033[37mAbility: Divine Heal - Restore 50% HP (12 turn CD)\033[0m";
+    moveCursor(pad + 4, y + 3);
+    buffer += "\033[37mPassive: Potions heal 50% more\033[0m";
+    y += 5;
 
-    moveCursor(22, 22);
+    y++;
     buffer += "\033[90m";
-    buffer += "Press [1-4] to select, [Q] to go back";
+    printCentered(y, tw, "Press [1-4] to select, [Q] to go back");
     resetColor();
 
     std::fputs(buffer.c_str(), stdout);
@@ -655,7 +855,268 @@ void Renderer::renderShop(const std::vector<ShopItem>& shopItems, int playerGold
 
     moveCursor(5, 18);
     buffer += "\033[90m";
-    buffer += "Press [1-5] to buy, [ESC] to leave";
+    buffer += "Press [1-5] to buy, [S] to sell items, [ESC] to leave";
+    resetColor();
+
+    std::fputs(buffer.c_str(), stdout);
+    std::fflush(stdout);
+}
+
+void Renderer::renderSellMenu(const Player& player) {
+    clearScreen();
+
+    moveCursor(5, 1);
+    buffer += "\033[1;33m";
+    buffer += "=== SELL ITEMS ===";
+    resetColor();
+
+    moveCursor(5, 3);
+    buffer += "\033[1;37m";
+    buffer += "Your Gold: " + std::to_string(player.gold);
+    resetColor();
+
+    if (player.inventory.size() == 0) {
+        moveCursor(7, 5);
+        buffer += "\033[90m";
+        buffer += "(no items to sell)";
+        resetColor();
+    } else {
+        for (int i = 0; i < player.inventory.size(); i++) {
+            moveCursor(7, 5 + i);
+            const Item& item = player.inventory.get(i);
+            int price = item.sellPrice();
+            buffer += "\033[37m";
+            buffer += "[" + std::to_string(i + 1) + "] " + item.description();
+            if (price > 0) {
+                buffer += " - \033[33m" + std::to_string(price) + " gold\033[37m";
+            } else {
+                buffer += " - \033[90mno value\033[37m";
+            }
+            resetColor();
+        }
+    }
+
+    moveCursor(5, 18);
+    buffer += "\033[90m";
+    buffer += "Press [1-9] to sell, [ESC] to go back";
+    resetColor();
+
+    std::fputs(buffer.c_str(), stdout);
+    std::fflush(stdout);
+}
+
+void Renderer::renderDeathRecap(const Player& player, int floor, int score) {
+    clearScreen();
+
+    int tw, th;
+    getTerminalSize(tw, th);
+    int pad = std::max(2, (tw - 50) / 2);
+    int y = std::max(1, (th - 20) / 2);
+
+    buffer += "\033[1;31m";
+    printCentered(y, tw, "=== YOU HAVE DIED ===");
+    resetColor();
+    y += 2;
+
+    // Cause of death
+    buffer += "\033[37m";
+    printCentered(y, tw, "Slain by " + player.lastDamageSource);
+    resetColor();
+    y += 2;
+
+    // Stats table
+    auto statLine = [&](const std::string& label, const std::string& val) {
+        moveCursor(pad, y);
+        buffer += "\033[90m" + label;
+        moveCursor(pad + 18, y);
+        buffer += "\033[1;37m" + val;
+        resetColor();
+        y++;
+    };
+
+    auto classStr = [](PlayerClass c) -> std::string {
+        switch (c) {
+            case PlayerClass::Warrior: return "Warrior";
+            case PlayerClass::Rogue:   return "Rogue";
+            case PlayerClass::Mage:    return "Mage";
+            case PlayerClass::Cleric:  return "Cleric";
+        }
+        return "???";
+    };
+
+    statLine("Class:", classStr(player.playerClass));
+    statLine("Level:", std::to_string(player.level));
+    statLine("Floor:", std::to_string(floor));
+    statLine("Turns:", std::to_string(player.turnsPlayed));
+    statLine("Kills:", std::to_string(player.killCount));
+    statLine("Gold:", std::to_string(player.gold));
+    statLine("Damage Dealt:", std::to_string(player.damageDealt));
+    statLine("Damage Taken:", std::to_string(player.damageTaken));
+    statLine("Potions Used:", std::to_string(player.potionsUsed));
+    y++;
+
+    // Equipment
+    moveCursor(pad, y);
+    buffer += "\033[90mWeapon: \033[33m";
+    if (player.hasEquippedWeapon()) {
+        buffer += player.getWeaponSlot().name + " (+" + std::to_string(player.getWeaponSlot().value) + " ATK)";
+    } else {
+        buffer += "(none)";
+    }
+    resetColor();
+    y++;
+
+    moveCursor(pad, y);
+    buffer += "\033[90mArmor:  \033[32m";
+    if (player.hasEquippedArmor()) {
+        buffer += player.getArmorSlot().name + " (+" + std::to_string(player.getArmorSlot().value) + " DEF)";
+    } else {
+        buffer += "(none)";
+    }
+    resetColor();
+    y += 2;
+
+    // Score
+    buffer += "\033[1;33m";
+    printCentered(y, tw, "Score: " + std::to_string(score));
+    resetColor();
+    y += 2;
+
+    buffer += "\033[1;37m";
+    printCentered(y, tw, "Press [R] to retry or [Q] to quit");
+    resetColor();
+
+    std::fputs(buffer.c_str(), stdout);
+    std::fflush(stdout);
+}
+
+void Renderer::renderLevelUp(const Player& player) {
+    clearScreen();
+
+    int tw, th;
+    getTerminalSize(tw, th);
+    int pad = std::max(2, (tw - 50) / 2);
+    int y = std::max(1, (th - 14) / 2);
+
+    buffer += "\033[1;33m";
+    printCentered(y, tw, "=== LEVEL UP! ===");
+    resetColor();
+    y += 2;
+
+    buffer += "\033[1;37m";
+    printCentered(y, tw, "You reached Level " + std::to_string(player.level) + "!");
+    resetColor();
+    y += 2;
+
+    buffer += "\033[37m";
+    printCentered(y, tw, "Choose a bonus:");
+    resetColor();
+    y += 2;
+
+    moveCursor(pad, y);
+    buffer += "\033[1;32m[1] Vitality\033[0m";
+    moveCursor(pad + 16, y);
+    buffer += "\033[37m+" + std::to_string(player.lvlHp) + " Max HP\033[0m";
+    y += 2;
+
+    moveCursor(pad, y);
+    buffer += "\033[1;31m[2] Power\033[0m";
+    moveCursor(pad + 16, y);
+    buffer += "\033[37m+" + std::to_string(std::max(1, player.lvlAtk)) + " ATK\033[0m";
+    y += 2;
+
+    moveCursor(pad, y);
+    buffer += "\033[1;34m[3] Fortitude\033[0m";
+    moveCursor(pad + 16, y);
+    buffer += "\033[37m+" + std::to_string(std::max(1, player.lvlDef)) + " DEF\033[0m";
+    y += 2;
+
+    buffer += "\033[90m";
+    printCentered(y, tw, "Press [1-3] to choose");
+    resetColor();
+
+    std::fputs(buffer.c_str(), stdout);
+    std::fflush(stdout);
+}
+
+void Renderer::renderDifficultySelect() {
+    clearScreen();
+
+    int tw, th;
+    getTerminalSize(tw, th);
+    int pad = std::max(2, (tw - 56) / 2);
+    int y = std::max(1, (th - 16) / 2);
+
+    buffer += "\033[1;33m";
+    printCentered(y, tw, "=== SELECT DIFFICULTY ===");
+    resetColor();
+    y += 3;
+
+    moveCursor(pad, y);
+    buffer += "\033[1;32m[1] Easy\033[0m";
+    moveCursor(pad + 4, y + 1);
+    buffer += "\033[37mEnemies have less health and deal less damage.\033[0m";
+    y += 3;
+
+    moveCursor(pad, y);
+    buffer += "\033[1;37m[2] Normal\033[0m";
+    moveCursor(pad + 4, y + 1);
+    buffer += "\033[37mThe standard dungeon experience.\033[0m";
+    y += 3;
+
+    moveCursor(pad, y);
+    buffer += "\033[1;31m[3] Hard\033[0m";
+    moveCursor(pad + 4, y + 1);
+    buffer += "\033[37mMore enemies, stronger and more aggressive.\033[0m";
+    y += 3;
+
+    buffer += "\033[90m";
+    printCentered(y, tw, "Press [1-3] to select, [Q] to go back");
+    resetColor();
+
+    std::fputs(buffer.c_str(), stdout);
+    std::fflush(stdout);
+}
+
+void Renderer::renderMessageLog(const std::vector<std::string>& log, int scrollOffset) {
+    clearScreen();
+
+    int tw, th;
+    getTerminalSize(tw, th);
+    int y = 1;
+
+    moveCursor(5, y);
+    buffer += "\033[1;33m";
+    buffer += "=== MESSAGE LOG ===";
+    resetColor();
+    y += 2;
+
+    int maxLines = th - 5;
+    int total = (int)log.size();
+    // scrollOffset 0 = most recent at bottom, increasing = scroll up
+    int endIdx = total - scrollOffset;
+    int startIdx = std::max(0, endIdx - maxLines);
+
+    for (int i = startIdx; i < endIdx; i++) {
+        moveCursor(3, y);
+        if (i == total - 1 && scrollOffset == 0) {
+            buffer += "\033[1;37m"; // latest message bright
+        } else {
+            buffer += "\033[37m";
+        }
+        std::string msg = log[i];
+        if ((int)msg.size() > tw - 4) msg = msg.substr(0, tw - 4);
+        buffer += msg;
+        resetColor();
+        y++;
+    }
+
+    moveCursor(5, th - 1);
+    buffer += "\033[90m";
+    buffer += "[UP/DOWN] Scroll  [ESC/M] Close";
+    if (total > 0) {
+        buffer += "  (" + std::to_string(startIdx + 1) + "-" + std::to_string(endIdx) + " of " + std::to_string(total) + ")";
+    }
     resetColor();
 
     std::fputs(buffer.c_str(), stdout);

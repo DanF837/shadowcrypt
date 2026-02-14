@@ -14,7 +14,8 @@ public:
                 const std::vector<Trap>& traps,
                 const std::vector<std::string>& log,
                 int floor, Biome biome = Biome::Stone,
-                Vec2 merchantPos = {-1,-1});
+                Vec2 merchantPos = {-1,-1},
+                int difficulty = 1);
     void renderWithCursor(const Map& map, const Player& player,
                 const std::vector<Enemy>& enemies,
                 const std::vector<Item>& items,
@@ -25,11 +26,16 @@ public:
                 Vec2 merchantPos = {-1,-1});
     void renderTitle(const std::vector<std::string>& topScores = {}, bool hasSaveFile = false);
     void renderGameOver(int floor, int level);
-    void renderWin(int level);
+    void renderWin(const Player& player, int floor, int score);
     void renderInventory(const Player& player);
     void renderHelp();
     void renderClassSelect();
     void renderShop(const std::vector<struct ShopItem>& shopItems, int playerGold);
+    void renderSellMenu(const Player& player);
+    void renderDeathRecap(const Player& player, int floor, int score);
+    void renderLevelUp(const Player& player);
+    void renderDifficultySelect();
+    void renderMessageLog(const std::vector<std::string>& log, int scrollOffset);
 
 private:
     std::string buffer;
@@ -39,4 +45,7 @@ private:
     void resetColor();
     char tileChar(Tile t, Biome biome = Biome::Stone) const;
     void getTileColor(Tile t, bool visible, int& fg, Biome biome = Biome::Stone) const;
+    std::string getMessageColor(const std::string& msg) const;
+    void getTerminalSize(int& cols, int& rows);
+    void printCentered(int y, int termW, const std::string& text);
 };

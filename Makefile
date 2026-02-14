@@ -1,11 +1,15 @@
 CXX = g++
 CXXFLAGS = -std=c++17 -Wall -Wextra -O2
 LDFLAGS =
-TARGET = shadowcrypt.exe
 
-export TMPDIR = $(HOME)/tmp
-export TMP = $(HOME)/tmp
-export TEMP = $(HOME)/tmp
+ifeq ($(OS),Windows_NT)
+    TARGET = shadowcrypt.exe
+    export TMPDIR = $(HOME)/tmp
+    export TMP = $(HOME)/tmp
+    export TEMP = $(HOME)/tmp
+else
+    TARGET = shadowcrypt
+endif
 
 SRC_DIR = src
 SRCS = $(filter-out $(SRC_DIR)/screenshot.cpp, $(wildcard $(SRC_DIR)/*.cpp))
