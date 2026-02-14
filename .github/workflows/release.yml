@@ -15,16 +15,10 @@ jobs:
         include:
           - os: windows-latest
             name: windows
-            artifact: shadowcrypt.exe
-            make: mingw32-make
           - os: ubuntu-latest
             name: linux
-            artifact: shadowcrypt
-            make: make
           - os: macos-latest
             name: macos
-            artifact: shadowcrypt
-            make: make
 
     runs-on: ${{ matrix.os }}
 
@@ -32,7 +26,12 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build
-        run: ${{ matrix.make }}
+        shell: bash
+        run: |
+          if [ "${{ matrix.name }}" = "windows" ]; then
+            export TEMP=$RUNNER_TEMP TMP=$RUNNER_TEMP TMPDIR=$RUNNER_TEMP
+          fi
+          make
 
       - name: Rename artifact
         shell: bash
