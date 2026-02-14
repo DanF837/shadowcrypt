@@ -3,8 +3,10 @@
 #ifdef _WIN32
 #include <conio.h>
 #else
+#include <cstdio>
 #include <termios.h>
 #include <unistd.h>
+#include <sys/select.h>
 static char getchUnix() {
     struct termios oldt, newt;
     tcgetattr(STDIN_FILENO, &oldt);
